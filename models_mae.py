@@ -120,6 +120,22 @@ class MaskedAutoencoderViT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], 3, h * p, h * p))
         return imgs
 
+    def apply_masking(self, x, mask=None, mask_ratio=None):
+        """
+        Perform per-sample masking based on parameters passed.
+        x: [N, L, D], sequence
+        mask: [N, L]
+        """
+
+        assert mask is not None or mask_ratio is not None
+
+        if mask is not None:
+            return self.specific_masking(x, mask)
+        if mask_ratio is not None:
+            return self.random_masking(x, mask_ratio)
+
+        assert False
+
     def random_masking(self, x, mask_ratio):
         """
         Perform per-sample random masking by per-sample shuffling.
@@ -131,8 +147,18 @@ class MaskedAutoencoderViT(nn.Module):
         
         noise = torch.rand(N, L, device=x.device)  # noise in [0, 1]
         
+        return self.masking_helper(x, noise, len_keep)
+
+    def masking_helper(self, x, mask_guidance, len_keep):
+        """
+        Perform per-sample random masking based on provided guidance.
+        x: [N, L, D], sequence
+        mask_guidance: [N, L]
+        """
+        N, L, D = x.shape  # batch, length, dim
+
         # sort noise for each sample
-        ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove
+        ids_shuffle = torch.argsort(mask_guidance, dim=1)  # ascend: small is keep, large is remove
         ids_restore = torch.argsort(ids_shuffle, dim=1)
 
         # keep the first subset
@@ -147,7 +173,27 @@ class MaskedAutoencoderViT(nn.Module):
 
         return x_masked, mask, ids_restore
 
-    def forward_encoder(self, x, mask_ratio):
+    def specific_masking(self, x, mask):
+        """Perform per-sample masking using specified mask.
+        x: [N, L, D], sequence
+        mask: [N, L]
+        """
+        N, L, D = x.shape  # batch, length, dim
+
+        mask_in = mask
+
+        len_masked = mask.sum(dim=1)
+        assert len_masked.min().item() == len_masked.max().item()
+        len_masked = len_masked.min().item()
+
+        len_keep = L - len_masked
+
+        x_masked, mask, ids_restore = self.masking_helper(x, mask, len_keep)
+        assert (mask == mask_in).all()
+
+        return x_masked, mask, ids_restore
+
+    def forward_encoder(self, x, mask_ratio=None, *, mask=None):
         # embed patches
         x = self.patch_embed(x)
 
@@ -155,7 +201,7 @@ class MaskedAutoencoderViT(nn.Module):
         x = x + self.pos_embed[:, 1:, :]
 
         # masking: length -> length * mask_ratio
-        x, mask, ids_restore = self.random_masking(x, mask_ratio)
+        x, mask, ids_restore = self.apply_masking(x, mask_ratio=mask_ratio, mask=mask)
 
         # append cls token
         cls_token = self.cls_token + self.pos_embed[:, :1, :]
@@ -213,8 +259,8 @@ class MaskedAutoencoderViT(nn.Module):
         loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
         return loss
 
-    def forward(self, imgs, mask_ratio=0.75):
-        latent, mask, ids_restore = self.forward_encoder(imgs, mask_ratio)
+    def forward(self, imgs, mask_ratio=0.75, *, mask=None):
+        latent, mask, ids_restore = self.forward_encoder(imgs, mask_ratio=mask_ratio, mask=mask)
         pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
         loss = self.forward_loss(imgs, pred, mask)
         return loss, pred, mask

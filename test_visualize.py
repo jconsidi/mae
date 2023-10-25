@@ -84,6 +84,13 @@ class VisualizeTest(unittest.TestCase):
                 f"mask_ratio={mask_ratio:.2f}", mask_ratio=mask_ratio
             )
 
+    def test_mask_specific(self):
+        for mask_mod in [2, 3, 5]:
+            self.try_model_and_plot(
+                f"mask_specific,mask_mod={mask_mod}",
+                mask=torch.tensor([[1 if i % mask_mod else 0 for i in range(14 * 14)]])
+            )
+
     def try_model_and_plot(self, test_name, **model_params):
         test_image = PIL.Image.open(self.TEST_IMAGE_PATH)
         test_image = test_image.resize((224, 224))
